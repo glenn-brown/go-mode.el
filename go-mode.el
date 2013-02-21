@@ -178,7 +178,7 @@ some syntax analysis.")
      ;; and subexp. 2 will be the type name immediately following it, if any.
      (go--next-param (1 font-lock-variable-name-face) (2 font-lock-type-face nil t))
      ;; Func return values that are not formatted as parameter lists
-     (,(concat "\\(" go-type-regexp "\\)\\s *{") 1 font-lock-type-face)
+     (,(concat "\\(" go-type-regexp "\\)" go-space-regexp "{") 1 font-lock-type-face)
      ;; Handle "var id { ',' id } =" with an anchored matcher.
      ("\\<var\\>" (go--next-id-in-list nil nil (0 font-lock-variable-name-face t)))
      (go-typedef-regexp 0 font-lock-type-face) ;; types
@@ -188,8 +188,7 @@ some syntax analysis.")
      (,(concat "\\<map\\[" go-type-name-regexp) 1 font-lock-type-face) ;; map key type
      (,(concat "\\<chan\\>[[:space:]]*\\(?:<-\\)?" go-type-name-regexp) 1 font-lock-type-face) ;; channel type
      (,(concat "\\<\\(?:new\\|make\\)\\>\\(?:[[:space:]]\\|)\\)*(" go-type-name-regexp) 1 font-lock-type-face) ;; new/make type
-     ;; TODO do we actually need this one or isn't it just a function call?
-     (,(concat "\\.\\s *(" go-type-name-regexp) 1 font-lock-type-face) ;; Type conversion
+     (,(concat "\\." go-space-regexp "(" go-space-regexp go-type-name-regexp) 1 font-lock-type-face) ;; Type conversion
      (,(concat "\\<func\\>[[:space:]]+(" go-identifier-regexp "[[:space:]]+" go-type-name-regexp ")") 1 font-lock-type-face) ;; Method receiver
      ;; Like the original go-mode this also marks compound literal
      ;; fields. There, it was marked as to fix, but I grew quite
