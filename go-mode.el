@@ -9,15 +9,38 @@
 (require 'ffap)
 (require 'find-lisp)
 
-(defconst go-dangling-operators-regexp "[^-]-\\|[^+]\\+\\|[/*&><.=|^]")
-(defconst gofmt-stdin-tag "<standard input>")
-(defconst go-identifier-regexp "[[:word:][:multibyte:]_]+")
-(defconst go-type-regexp "[[:word:][:multibyte:]_*]+")
-(defconst go-func-regexp (concat "\\<func\\>\\s *\\(" go-identifier-regexp "\\)"))
-(defconst go-func-meth-regexp (concat "\\<func\\>\\s *\\(?:(\\s *" go-identifier-regexp "\\s +" go-type-regexp "\\s *)\\s *\\)?\\(" go-identifier-regexp "\\)("))
-(defconst go-builtins '("append" "cap" "close" "complex" "copy" "delete" "imag" "len" "make" "new" "panic" "print" "println" "real" "recover"))
-(defconst go-constants '("nil" "true" "false" "iota"))
-(defconst go-type-name-regexp (concat "\\(?:[*(]\\)*\\(?:" go-identifier-regexp "\\.\\)?\\(" go-identifier-regexp "\\)"))
+;; Whitespace is tricky: '\\s ' does not match newlines because the
+;; symtab mentions '>' first for newline, as it must for comments to
+;; be treated properly.  Also, comments must be treated as whitespace.
+(defconst go-space-regexp
+  (concat "\\(?:" "\n"		; Newline
+	  "\\|" "\\s "		; // Whitespace class (except newline)
+	  "\\|" "//[^\n]*\n"	; // Comment
+	  "\\|" "/\\*" "\\(?:[^*]\\|\\*+[^/*]\\)*" "\\*/" ; /* Comment */
+	  "\\)*"))
+
+(let ((_ go-space-regexp)	      ; Whitespace, including comments
+      ({ "\\(?:") (} "\\)*")	      ; { Repetition }
+      (<< "\\(?:") (>> "\\)?")	      ; << Optional >>
+      (C "\\(") (D "\\)")	      ; C Captured D
+      )
+  ;; The 'let' definitions above allow us to write grammar-like regexps succinctly,
+  ;; much like EBNF notation.
+  (defconst go-dangling-operators-regexp "[^-]-\\|[^+]\\+\\|[/*&><.,=|^{(]")
+  (defconst gofmt-stdin-tag "<standard input>")
+  (defconst go-identifier-regexp "[[:word:][:multibyte:]_]+")
+  (defconst go-type-regexp "[[:word:][:multibyte:]_*.]+")
+  (defconst go-builtins '("append" "cap" "close" "complex" "copy" "delete" "imag" "len" "make" "new" "panic" "print" "println" "real" "recover"))
+  (defconst go-constants '("nil" "true" "false" "iota"))
+  (defconst go-type-name-regexp (concat "\\(?:[*(]\\)*\\(?:" go-identifier-regexp "\\.\\)?\\(" go-identifier-regexp "\\)"))
+  (defconst go-typedef-regexp (concat "\\<type\\>" _ go-identifier-regexp _ << go-type-regexp >>))
+  (defconst go-id-list-regexp (concat go-identifier-regexp { _ "," _ go-identifier-regexp }))
+  (defconst go-id-type-regexp (concat go-identifier-regexp _ go-type-regexp))
+  (defconst go-id-otype-regexp (concat C go-identifier-regexp D  << _ C go-type-regexp D >>))
+  (defconst go-func-regexp (concat "\\<func\\>" _ C go-identifier-regexp D))
+  (defconst go-func-meth-regexp (concat "\\<func\\>" _ << "(" _ go-id-type-regexp _ ")" _ >> C go-identifier-regexp D _ "("))
+  (defconst go-param-list-regexp (concat { go-id-otype-regexp _ "," _ } go-id-type-regexp))
+)
 
 (defvar go-dangling-cache)
 
@@ -64,6 +87,77 @@
 some syntax analysis.")
 
 
+;; Return the next match to INNER regexp within a match to
+;; OUTER regexp, advancing pointer over INNER regexp. This function
+;; assumes that OUTER regexp will continue to match after any match to
+;; INNER regexp has been removed.
+(defun go--next-within (inner outer limit)
+  (let ((start (point)))
+    (when (re-search-forward outer limit t)
+      (let ((stop (point)))
+	(goto-char (match-beginning 0))
+	(when (> start (point))
+	  (goto-char start))
+	(or (re-search-forward inner stop 'mv)
+	    (go--next-within inner outer limit))))))
+
+;; Return the next variable on the left-hand-side of a ":=" assignment.
+(defun go--next-defeq-var (limit)
+  (go--next-within go-identifier-regexp
+		   (concat go-id-list-regexp go-space-regexp "*:=")
+		   limit))
+
+;; Return the next parameter in a parameter-list.
+(defun go--next-param (limit)
+  (go--next-within go-id-otype-regexp
+		   (concat go-param-list-regexp go-space-regexp ")")
+		   limit))
+
+;; Capture the first ID in an ID list.
+(defun go--next-id-in-list (limit)
+  (go--next-within go-identifier-regexp
+		   (concat go-id-list-regexp go-space-regexp "=")
+		   limit))
+
+;; Extend the font-lock region to include preceding full lines joined
+;; by danglin operators.  This will be called repeatedly until it returns nil,
+;; indicating no change was made.
+(defun go--font-lock-extend-region-back ()
+  (save-excursion
+    (goto-char font-lock-beg)
+    (while (go-previous-line-has-dangling-op-p)
+	(progn
+	  (go--backward-irrelevant t)
+	  (beginning-of-line)))
+    (if (/= font-lock-beg (point))
+	(set 'font-lock-beg (point))
+      nil)))
+
+;; Extend the font-lock region to include subsequent lines if there is a line continuation
+;; at the end of the current line.
+(defun go--font-lock-extend-region-forward ()
+  (save-excursion
+    (let ((original-end font-lock-end))
+      (goto-char font-lock-end)
+      (end-of-line)
+      (search-forward-regexp go-space-regexp)
+      (goto-char (match-end 0))
+      (end-of-line)
+      (while (and (/= font-lock-end (point))
+		  (go-previous-line-has-dangling-op-p))
+	(set 'font-lock-end (point))
+	(end-of-line)
+	(search-forward-regexp go-space-regexp)
+	(goto-char (match-end 0))
+	(end-of-line))
+      (if (/= original-end font-lock-end)
+	  font-lock-end
+	nil))))
+
+;; FIXME: Sledge Hammer approach.
+(defun go--font-lock-extend-after-change-region (beg end oldlen)
+  (cons 1 (1+ (buffer-size))))
+
 (defun go--build-font-lock-keywords ()
   (append
    `((,(regexp-opt go-mode-keywords 'symbols) . font-lock-keyword-face)
@@ -78,8 +172,16 @@ some syntax analysis.")
      `((,go-func-meth-regexp 1 font-lock-function-name-face))) ;; method name
 
    `(
-     ("\\<type\\>[[:space:]]*\\([^[:space:]]+\\)" 1 font-lock-type-face) ;; types
-     (,(concat "\\<type\\>[[:space:]]*" go-identifier-regexp "[[:space:]]*" go-type-name-regexp) 1 font-lock-type-face) ;; types
+     ;; Variables to the left of ":="
+     (go--next-defeq-var 0 font-lock-variable-name-face)
+     ;; Types and Variables in parameter lists.  Subexpression 1 will the the variable name,
+     ;; and subexp. 2 will be the type name immediately following it, if any.
+     (go--next-param (1 font-lock-variable-name-face) (2 font-lock-type-face nil t))
+     ;; Func return values that are not formatted as parameter lists
+     (,(concat "\\(" go-type-regexp "\\)\\s *{") 1 font-lock-type-face)
+     ;; Handle "var id { ',' id } =" with an anchored matcher.
+     ("\\<var\\>" (go--next-id-in-list nil nil (0 font-lock-variable-name-face t)))
+     (go-typedef-regexp 0 font-lock-type-face) ;; types
      (,(concat "\\(?:[[:space:]]+\\|\\]\\)\\[\\([[:digit:]]+\\|\\.\\.\\.\\)?\\]" go-type-name-regexp) 2 font-lock-type-face) ;; Arrays/slices
      (,(concat "map\\[[^]]+\\]" go-type-name-regexp) 1 font-lock-type-face) ;; map value type
      (,(concat "\\(" go-identifier-regexp "\\)" "{") 1 font-lock-type-face)
@@ -296,6 +398,12 @@ recommended to look at goflymake
   ;; Font lock
   (set (make-local-variable 'font-lock-defaults)
        '(go--build-font-lock-keywords))
+  (set (make-local-variable 'font-lock-extend-region-functions)
+       '(go--font-lock-extend-region-back
+	 go--font-lock-extend-region-forward))
+  (set (make-local-variable 'font-lock-extend-after-change-region-function)
+       'go--font-lock-extend-after-change-region)
+  (set (make-local-variable 'font-lock-multiline) t)
 
   ;; Indentation
   (set (make-local-variable 'indent-line-function) 'go-mode-indent-line)
