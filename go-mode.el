@@ -14,7 +14,7 @@
 ;; be treated properly.  Also, comments must be treated as whitespace.
 (defconst go-space-regexp
   (concat "\\(?:" "\n"		; Newline
-	  "\\|" "\\s "		; Whitespace class (except newline)
+	  "\\|" "\\s +"		; Whitespace class (except newline)
 	  "\\|" "//[^\n]*\n"	; // Comment
 	  "\\|" "/\\*" "\\(?:[^*]\\|\\*+[^/*]\\)*" "\\*/" ; /* Comment */
 	  "\\)*"))
