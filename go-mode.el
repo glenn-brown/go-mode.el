@@ -26,7 +26,8 @@
       )
   ;; The 'let' definitions above allow us to write grammar-like regexps succinctly,
   ;; much like EBNF notation.
-  (defconst go-dangling-operators-regexp "[^-]-\\|[^+]\\+\\|[/*&><.,=|^{(]")
+  (defconst go-dangling-operators-regexp "[^-]-\\|[^+]\\+\\|[/*&><.=|^]")
+  (defconst go-line-continuation-regexp  "[^-]-\\|[^+]\\+\\|[/*&><.=|^,{(]")
   (defconst gofmt-stdin-tag "<standard input>")
   (defconst go-identifier-regexp "[[:word:][:multibyte:]_]+")
   (defconst go-type-regexp "[[:word:][:multibyte:]_*.]+")
@@ -43,6 +44,7 @@
 )
 
 (defvar go-dangling-cache)
+(defvar go-line-continuation-cache)
 
 (defgroup go nil
   "Major mode for editing Go code"
@@ -125,7 +127,7 @@ some syntax analysis.")
 (defun go--font-lock-extend-region-back ()
   (save-excursion
     (goto-char font-lock-beg)
-    (while (go-previous-line-has-dangling-op-p)
+    (while (go-previous-line-has-line-continuation-p)
 	(progn
 	  (go--backward-irrelevant t)
 	  (beginning-of-line)))
@@ -144,7 +146,7 @@ some syntax analysis.")
       (goto-char (match-end 0))
       (end-of-line)
       (while (and (/= font-lock-end (point))
-		  (go-previous-line-has-dangling-op-p))
+		  (go-previous-line-has-line-continuation-p))
 	(set 'font-lock-end (point))
 	(end-of-line)
 	(search-forward-regexp go-space-regexp)
@@ -249,15 +251,21 @@ some syntax analysis.")
         (go--backward-irrelevant stop-at-string))
     (/= start-pos (point))))
 
-(defun go-previous-line-has-dangling-op-p ()
+(defun go-previous-line-has (regexp cache)
   (let* ((cur-line (count-lines (point-min) (point)))
-         (val (gethash cur-line go-dangling-cache 'nope)))
+         (val (gethash cur-line cache 'nope)))
     (if (equal val 'nope)
         (save-excursion
           (beginning-of-line)
           (go--backward-irrelevant t)
-          (puthash cur-line (looking-back go-dangling-operators-regexp) go-dangling-cache))
+          (puthash cur-line (looking-back regexp) cache))
       val)))
+
+(defun go-previous-line-has-dangling-op-p ()
+  (go-previous-line-has go-dangling-operators-regexp go-dangling-cache))
+
+(defun go-previous-line-has-line-continuation-p ()
+  (go-previous-line-has go-line-continuation-regexp go-line-continuation-cache))
 
 (defun go-goto-opening-parenthesis (&optional char)
   (let ((start-nesting (go-paren-level)) group)
@@ -422,6 +430,9 @@ recommended to look at goflymake
 
   (set (make-local-variable 'go-dangling-cache) #s(hash-table test eql))
   (add-to-list 'before-change-functions (lambda (x y) (setq go-dangling-cache #s(hash-table test eql))))
+
+  (set (make-local-variable 'go-line-continuation-cache) #s(hash-table test eql))
+  (add-to-list 'before-change-functions (lambda (x y) (setq go-line-continuation-cache #s(hash-table test eql))))
 
 
   (setq imenu-generic-expression
