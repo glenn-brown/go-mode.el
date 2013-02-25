@@ -13,11 +13,9 @@
 ;; symtab mentions '>' first for newline, as it must for comments to
 ;; be treated properly.  Also, comments must be treated as whitespace.
 (defconst go-space-regexp
-  (concat "\\(?:" "\n"		; Newline
-	  "\\|" "\\s +"		; Whitespace class (except newline)
-	  "\\|" "//[^\n]*\n"	; // Comment
-	  "\\|" "/\\*" "\\(?:[^*]\\|\\*+[^/*]\\)*" "\\*/" ; /* Comment */
-	  "\\)*"))
+  "\\(?:\\s +\\|\n\\|//[^\n]*\\|/\\*\\(?:[^*]\\|\\*+[^/*]\\)*\\|\\*/\\)*")
+;;      `---'   `'   `------'   `---------------------------'   `--' 
+;; space^ newline^   '//...'    "/*..."                         "*/"
 
 (let ((_ go-space-regexp)	      ; Whitespace, including comments
       ({ "\\(?:") (} "\\)*")	      ; { Repetition }
