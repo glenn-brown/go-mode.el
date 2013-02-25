@@ -123,15 +123,20 @@ some syntax analysis.")
 ;; by danglin operators.  This will be called repeatedly until it returns nil,
 ;; indicating no change was made.
 (defun go--font-lock-extend-region-back ()
+  (let ((beg (go--extend-back font-lock-beg)))
+    (if (/= font-lock-beg beg)
+	(set 'font-lock-beg beg)
+      nil)))
+
+;; Extend a region backwards from BEG to include all line continuations.
+(defun go--extend-back (beg)
   (save-excursion
-    (goto-char font-lock-beg)
+    (goto-char beg)
     (while (go-previous-line-has-line-continuation-p)
 	(progn
 	  (go--backward-irrelevant t)
 	  (beginning-of-line)))
-    (if (/= font-lock-beg (point))
-	(set 'font-lock-beg (point))
-      nil)))
+    (point)))
 
 ;; Extend the font-lock region to include subsequent lines if there is a line continuation
 ;; at the end of the current line.
