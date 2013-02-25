@@ -141,24 +141,28 @@ some syntax analysis.")
 ;; Extend the font-lock region to include subsequent lines if there is a line continuation
 ;; at the end of the current line.
 (defun go--font-lock-extend-region-forward ()
+  (let ((new-end (go--extend-back font-lock-end)))
+    (if (/= new-end font-lock-end)
+	(set 'font-lock-end new-end)
+      nil)))
+
+; Extend the end of a region forward to include all continuation lines.
+(defun go--extend-forward (end)
   (save-excursion
-    (let ((original-end font-lock-end))
-      (goto-char font-lock-end)
+      (goto-char end)
       (end-of-line)
       (search-forward-regexp go-space-regexp)
       (goto-char (match-end 0))
       (end-of-line)
-      (while (and (/= font-lock-end (point))
+      (while (and (/= end (point))
 		  (go-previous-line-has-line-continuation-p))
-	(set 'font-lock-end (point))
+	(set 'end (point))
 	(end-of-line)
 	(search-forward-regexp go-space-regexp)
 	(goto-char (match-end 0))
 	(end-of-line))
-      (if (/= original-end font-lock-end)
-	  font-lock-end
-	nil))))
-
+      (point)))
+  
 ;; FIXME: Sledge Hammer approach.
 (defun go--font-lock-extend-after-change-region (beg end oldlen)
   (cons 1 (1+ (buffer-size))))
