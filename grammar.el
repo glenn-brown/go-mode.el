@@ -13,24 +13,23 @@
 (require 'rx)				; For rx-to-string
 (require 'newcomment)			; For comment skipping
 
-;; Return the symbol with with the same name as SYMBOL,
-;; but with a 'go-' prefix.
-(defun go-prefix-symbol (symbol)
-  (make-symbol (concatenate 'string "go-" (symbol-name symbol))))
-
 ;;;;;;;;;;;;;;;;
 ;;; Character classes, in SRE form.
 ;;; See http://www.ccs.neu.edu/home/shivers/papers/sre.txt or lisp function rx.
 ;;;;;;;;;;;;;;;;
 
-(setq go-newline	`"\n")
-(setq go-unicode-char	`nonl)
-(setq go-unicode-letter	`alpha)
-(setq go-unicode-digit	`digit)
-(setq go-letter		`(| "_" ,go-unicode-letter))
-(setq go-decimal-digit	`(in "0-9"))
-(setq go-octal-digit	`(in "0-7"))
-(setq go-hex-digit	`(in "0-9A-Fa-f"))
+(setq go-newline		`"\n")
+; The spec's unicode-char class is split into 3 classes because the spec requires
+; certain characters to be excluded.
+(setq go-unicode-char--nobq	`(not (any "`" ))) ; no backquote
+(setq go-unicode-char--nodq	`(not (any "\""))) ; no double quote
+(setq go-unicode-char--nosq	`(not (any "'" ))) ; no single quote
+(setq go-unicode-letter		`alpha)
+(setq go-unicode-digit		`digit)
+(setq go-letter			`(| "_" ,go-unicode-letter))
+(setq go-decimal-digit		`(in "0-9"))
+(setq go-octal-digit		`(in "0-7"))
+(setq go-hex-digit		`(in "0-9A-Fa-f"))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Tokenization a.k.a. Lexing a.k.a. Lexical Analysis
@@ -78,15 +77,18 @@
    (little-u-value	(: "\\u" (= 4 hex-digit)))
    (big-u-value		(: "\\U" (= 8 hex-digit)))
    (escaped-char	(: "\\" (in "abfnrtv\\'\"")))
-   (unicode-value	(| unicode-char little-u-value big-u-value escaped-char))
+   ;; The Go spec's unicode-value is here split into --nodq (no double quote) and
+   ;; --nosq (no single quote) versions because the spec EBNF is slightly broken.
+   (unicode-value--nodq	(| unicode-char--nodq little-u-value big-u-value escaped-char))
+   (unicode-value--nosq	(| unicode-char--nosq little-u-value big-u-value escaped-char))
    (octal-byte-value	(: "\\" octal-digit octal-digit octal-digit))
    (hex-byte-value	(: "\\x" hex-digit hex-digit))
    (byte-value		(| octal-byte-value hex-byte-value))
-   (char-lit		(: "'" (| unicode-value byte-value) "'"))
-   (raw-string-lit	(: "\'" (* (| unicode-char newline)) "\'"))
-   (interpreted-string-lit (: "\"" (* (| unicode-value byte-value)) "\""))
+   (char-lit		(: "'" (| unicode-value--nosq byte-value) "'"))
+   (raw-string-lit	(: "`" (* (| unicode-char--nobq newline)) "`"))
+   (interpreted-string-lit (: "\"" (* (| unicode-value--nodq byte-value)) "\""))
    (string-lit		(| raw-string-lit interpreted-string-lit))
-   (keywords		(|
+   (keyword		(|
 			 ;; Sort by length, then value, so
 			 ;; regexp leftmost-longest matching
 			 ;; will match the longest. I.e:
@@ -102,7 +104,7 @@
 			 "go" "if"))
    ;; Order is critical here: Put the longest first, to prefer longer matches.
    ;; Sort tokens of the same length, to allow rx-to-string to combine prefixes.
-   (operator-or-delimeter (|
+   (operator-or-delimiter (|
 			   ;; Sort by length, then value, so
 			   ;; regexp leftmost-longest matching
 			   ;; will match the longest.
@@ -121,12 +123,7 @@
 			   imaginary-lit float-lit int-lit
 			   char-lit
 			   string-lit
-			   operator-or-delimeter))
-   (id-int-float-imaginary-rune (| identifier
-				   int-lit
-				   float-lit
-				   imaginary-lit
-				   char-lit))))
+			   operator-or-delimiter))))
 
 ;; For each TOKEN in the table above, define go-TOKEN to be its SRE representation.
 (dolist (x go-tokens) (set (go-prefix-symbol (car x)) (go-valuate (cadr x))))
@@ -135,25 +132,69 @@
 (setq go-token-regexp  (rx-to-string go-token  t)) ; longest token at start
 (setq go-letter-regexp (rx-to-string go-letter t)) ; start of an identifier
 
+;;;;;;;;;;;;;;;;
+;;;; Keyword support
+;;;;;;;;;;;;;;;;
+
+; Extract the list from the SRE expression.
+(defvar go-keywords (cdr go-keyword) "A list of Go keywords")
+
 ;; Create a hash table of Go keywords.
-(setq go-keyword-hash (make-hash-table :test 'equal :size (length (cdr go-keywords))))
-(dolist (key (cdr go-keywords)) (puthash key t go-keyword-hash))
-
+(let ((hash (make-hash-table :test 'equal :size (length go-keywords))))
+  (dolist (key go-keywords) (puthash key t hash))
+  (defvar go-keyword-hash hash "A hashtable holding t for each keyword string"))
+  
 ;; Return t if str is a keyword, else nil.
-(defun go-keywordp (str) (gethash str go-keyword-hash))
+(defun go-keywordp (str)
+  "Return t if STR is a keyword, else nil."
+  (gethash str go-keyword-hash))
 
-;; A trivial token object.
+;;;;;;;;;;;;;;;;
+;;;; Token object
+;;;;;;;;;;;;;;;;
+
+;; Constructor
 (defun go-make-token (value start-pos end-pos)
-  (message "go-make-token %S" value)
-  (list value start-pos end-pos))
-(defun go-token-value (token) (car token))
+  (cons (cons nil value) (cons start-pos end-pos)))
+
+;; Accessors
+(defun go-token-value (token) (cdar token))
 (defun go-token-start (token) (cadr token))
-(defun go-token-end   (token) (caddr token))
+(defun go-token-end   (token) (cddr token))
+
+;; Return the type of a token, given int string VALUE.
+(defun go--token-type (value)
+  (let ((s (substring s 0 1)))
+    (cond
+     ;; Numerical types.
+     ((string-match "[0-9]'" s)
+      (cond ((eql (aref s 0) ?')			'go-char-lit)
+	    ((equal (substring str -1) "i")		'go-imaginary-lit)
+	    ((string-match "\." str)			'go-float-lit)
+	    ('go-int-lit)))
+     ;; Strings
+     ((string-match "[`\"]" s)				'go-string-lit)
+     ;; Identifiers and keywords.
+     ((string-match go-letter-regexp s)
+      (cond ((go-keywordp str)				'go-keyword)
+	    (						'go-identifier)))
+     ;; Everything else is an operator or delimiter.
+     (							'go-operator-or-delimiter))))
+
+;; Return the type of a token, one of: 'go-identifier,
+;; 'go-{string,imaginary,float,int,char}-lit, 'go-keyword, or
+;; 'go-operator-or-delimeter.
+(defun go-token-type  (token)
+  ; Lazily initialize the token type, caching the computed value.
+  (cond ((caar token)) ; <- Return cached valued if available.  v-- Cache and return.
+	((setcar (car token) (go--token-type (go-token-value (token)))))))
+
+;;;;;;;;;;;;;;;;
 
 ;; Map keywords, operators, and delimiters to t if they cause a semicolon-insertion
-;; at the end of lines.
+;; at the end of lines.  Map other keywords to nil.
 (let ((hash (make-hash-table :test 'equal)))
-  (dolist (key (cdr go-keywords)) (puthash key nil hash))
+  (dolist (key go-keywords) (puthash key nil hash))
   (puthash "break" t hash)
   (puthash "continue" t hash)
   (puthash "fallthrough" t hash)
@@ -172,7 +213,7 @@
 	  ((string-match "[0-9'\"]" name) t) ; int- float- imaginary- char- or string-lit
 	  ((string-match go-letter-regexp name)
 	   (gethash name go-continuation-hash t)) ; identifier or keyword.
-	  ((gethash name go-continuation-hash nil))))) ; operators, delimeters
+	  ((gethash name go-continuation-hash nil))))) ; operators, delimiters
 
 ;; Convert a region to a list of tokens.
 (defun go-tokenize (start end)
@@ -180,70 +221,49 @@
   (setq prev-token-on-line nil)
   (with-current-buffer buffer
     (save-excursion
-      (message "starting")
       (goto-char start)
-      (message "letting")
       ;; Process text in pieces: whitespace, comments, newlines, and tokens.
-      (message "Starting loop")
       (setq this (char-after (point)))
       (while this
-	;; (message "looping")
-	(let (next (char-after (1+ (point))))
+	(let ((nxt (char-after (1+ (point)))))
 	  (cond
 	   ;; Skip whitespace characters.
-	   ;; ((progn (message "1") nil))
-	   ((re-search-forward "\\s-" (min end (1+ (point))) t)
-	    ;; (message "Skipping whitespace.")
-	    )
+	   ((re-search-forward "\\s-+" (min end (1+ (point))) t))
 	   ;; Insert elided semicolons at newlines.
-	   ;; ((progn (message "2") nil))
-	   ((eq this ?\n)
-	    ;; (message "eol")
+	   ((eql this ?\n)
 	    (forward-char)
 	    (if (go-continuationp prev-token-on-line)
 		(let ((pt (point)))
 		  (setq tokens (cons (go-make-token ";" pt (1+ pt)) tokens))
-		  (setq prev-token-on-line nil)
-		  )))
+		  (setq prev-token-on-line nil))))
 	   ;; Skip comments, treating them as a newline if they contain a newline.
-	   ;; ((progn (message "3") nil))
-	   ((and (eq this ?/) (| (eq next ?/) (eq next ?*)))
-	    ;; (message "Skipping comment")
-	    (let ((eol (progn (save-excursion (end-of-line) (point)))))
-	      (forward-comment)
-	      (if (> (point) (eol))	; Contains newline
-		  (if (go-continuationp prev-token-on-line)
-		      (let ((pt (point)))
-			(setq tokens (cons (go-make-token ";" pt pt) tokens))
-			(setq prev-token-on-line nil))))))
+	   ((and (eql this ?/)
+		 (or (eql nxt ?/)
+		     (eql nxt ?*)))
+	    (let ((eol (save-excursion (end-of-line) (point))))
+	      (forward-comment 1)
+	      (let ((pt (point)))
+		(if (and (> pt eol)		; Contains newline
+			 (go-continuationp prev-token-on-line))
+		    (progn (setq tokens (cons (go-make-token ";" pt pt) tokens))
+			   (setq prev-token-on-line nil))))))
 	   ;; Record and advance over tokens.
-	   ;; ((progn (message "4") nil))
 	   ((re-search-forward go-token-regexp end t)
 	    (let* ((ms (match-string 0))
-		  (mb (match-beginning 0))
-		  (me (match-end 0))
-		  (tok (go-make-token ms mb me)))
-	      ;; (message "set prev")
+		   (mb (match-beginning 0))
+		   (me (match-end 0))
+		   (tok (go-make-token ms mb me)))
 	      (setq prev-token-on-line tok)
-	      ;; (message "lappend")
-	      (setq tokens (cons prev-token-on-line tokens))
-	      ;; (message "lappended")
-	      ))
+	      (setq tokens (cons prev-token-on-line tokens))))
 	   ;; Something is wrong if the token did not match.
-	   ;; ((progn (message "5") nil))
-	   (t
-	    (error "Unrecognized token at %d\n" (point))))
-	  ;;(message "Advancing")
+	   (t (error "Unrecognized token at %d\n" (point))))
 	  )
 	(setq this (char-after (point))))
-      ;;(message "Reversing")
       ;; Reverse and return the token list.
-      (nreverse tokens)
-      ;;(message "Done.")
-      )))
+      (nreverse tokens))))
 
 (defun go-tokenize-buffer (buffer)
-  ""					;FIXME: user-visible for debugging.
+  ""				   ;FIXME: user-visible for debugging.
   (interactive "b")
   (with-current-buffer buffer
     (go-tokenize (point-min) (point-max))))
@@ -476,8 +496,6 @@
 ;; (setq go-Type (go-| go-Typename go-TypeList (go-: "(" go-Type ")")))
 ;; etc.
 (dolist (x go-production-rules) (setq (intern (symbol-name (car x))) (cadr x)))
-
-(message "%S" go-TypeAssertion)		;FIXME
 
 ;; Keywords, comments, and strings are handled by syntax table entries.
 ;; The rest are handled here.
