@@ -496,7 +496,7 @@
 ;; Define a variable for each production rule. That is:
 ;; (setq go-Type (go-| go-Typename go-TypeList (go-: "(" go-Type ")")))
 ;; etc.
-(dolist (x go-production-rules) (setq (intern (symbol-name (car x))) (cadr x)))
+(dolist (x go-production-rules) (set (intern (symbol-name (car x))) (cadr x)))
 
 ;; Keywords, comments, and strings are handled by syntax table entries.
 ;; The rest are handled here.
