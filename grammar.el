@@ -10,8 +10,9 @@
 ;;;; This file relies on Emacs's fast built-in syntax analyzer to
 ;;;; identify comments, keywords, and strings.
 
-(require 'rx)				; For rx-to-string
+(require 'cl)				; For concatenate
 (require 'newcomment)			; For comment skipping
+(require 'rx)				; For rx-to-string
 
 ;;;;;;;;;;;;;;;;
 ;;; Character classes, in SRE form.
