@@ -61,7 +61,7 @@
 (defvar
  go-tokens
  '(
-   ;; We don't use the -comment tokens.  Instead, our tokenizer reilies
+   ;; We don't use the -comment tokens.  Instead, our tokenizer relies
    ;; on Emacs's built-in syntax analyzer to identify them and relies on
    ;; the newcomment package to skip over them.
    ;; (line-comment	(rx (: "//" (* ,unicode-char)) "\n"))
