@@ -160,12 +160,12 @@
 ;; Constructor
 (defun go-make-token (value start-pos end-pos)
   (setq value (substring-no-properties value))
-  (cons (cons value nil) (cons start-pos end-pos)))
+  (list value start-pos end-pos . nil))
 
 ;; Accessors
-(defun go-token--value (token) (caar token))
+(defun go-token--value (token) (car token))
 (defun go-token--start (token) (cadr token))
-(defun go-token--end   (token) (cddr token))
+(defun go-token--end   (token) (caddr token))
 
 ;; Return the type of a token, given int string VALUE.
 (defun go-token-type (value)
@@ -201,8 +201,8 @@
 ;; 'go-operator-or-delimeter.
 (defun go-token--type  (token)
   ; Lazily initialize the token type, caching the computed value.
-  (cond ((cdar token)) ; <- Return cached valued if available.  v-- Cache and return.
-	((setcdr (car token) (go-token-type (go-token--value token))))))
+  (cond ((cdddr token)) ; <- Return cached valued if available.  v-- Cache and return.
+	((setcdr (cddr token) (go-token-type (go-token--value token))))))
 
 ;;;;;;;;;;;;;;;;
 
@@ -524,7 +524,7 @@
 (defun go-parse-buffer (buffer) ""
   (interactive "b")
   (let ((result (go-parse (go-tokenize-buffer buffer) 'go-SourceFile)))
-    (message "parse: %S" (cadr result))
+    (message "parse: %S" result)
     result))
 
 ;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
